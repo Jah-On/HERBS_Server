@@ -10,21 +10,21 @@ struct AppData {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct MonitorData {
-    temperature: i8,  // Celcius
-    humidity:    u8,  // % Relative Humidity
-    pressure:    u16, // Millibars
-    accoustics:  u16, // ADC Ouput Value
-    hive_mass:   u16  // Grams
+	temperature: i8,  // Celcius
+	humidity:    u8,  // % Relative Humidity
+	pressure:    u16, // Millibars
+	accoustics:  u16, // ADC Ouput Value
+	hive_mass:   u16  // Grams
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct DbMonitorData {
 	timestamp:   String, // UTC String
-    temperature: i8,     // Celcius
-    humidity:    u8,     // % Relative Humidity
-    pressure:    u16,    // Millibars
-    accoustics:  u16,    // ADC Ouput Value
-    hive_mass:   u16     // Grams
+	temperature: i8,     // Celcius
+	humidity:    u8,     // % Relative Humidity
+	pressure:    u16,    // Millibars
+	accoustics:  u16,    // ADC Ouput Value
+	hive_mass:   u16     // Grams
 }
 
 //
@@ -43,10 +43,10 @@ async fn index(path: web::Path<String>, req_body: String, shared: web::Data<Mute
 	let col: mongodb::Collection<DbMonitorData> = locked.db.collection(path.as_str());
 
 	let data: MonitorData;
-    match serde_json::from_str(&req_body) {
-        Ok(val) => data = val,
-        Err(_)  => return HttpResponse::BadRequest()
-    }
+	match serde_json::from_str(&req_body) {
+		Ok(val) => data = val,
+		Err(_)  => return HttpResponse::BadRequest()
+	}
 
     col.insert_one(DbMonitorData{
     	timestamp:   Utc::now().to_string(),
@@ -73,7 +73,7 @@ async fn main() -> std::io::Result<()> {
 		std::env::var("MONGODB_URI").expect(
 			"Connection string environment variable does not exist!"
 		)
-	).await.expect("Could not exstablish connection!");
+	).await.expect("Could not establish connection!");
 
 	let db =       conn.database("beehivesensors");
 	let existing = db.list_collection_names().await.unwrap();
