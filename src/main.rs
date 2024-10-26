@@ -10,21 +10,21 @@ struct AppData {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct MonitorData {
-	temperature: i8,  // Celcius
+	hive_temp:   i8,  // Celcius
+	extern_temp: i8,  // Celcius
 	humidity:    u8,  // % Relative Humidity
 	pressure:    u16, // Millibars
-	accoustics:  u16, // ADC Ouput Value
-	hive_mass:   u16  // Grams
+	acoustics:   u16  // Loudness Value
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct DbMonitorData {
 	timestamp:   String, // UTC String
-	temperature: i8,     // Celcius
-	humidity:    u8,     // % Relative Humidity
-	pressure:    u16,    // Millibars
-	accoustics:  u16,    // ADC Ouput Value
-	hive_mass:   u16     // Grams
+	hive_temp:   i8,  // Celcius
+	extern_temp: i8,  // Celcius
+	humidity:    u8,  // % Relative Humidity
+	pressure:    u16, // Millibars
+	acoustics:   u16  // Loudness Value
 }
 
 //
@@ -50,11 +50,11 @@ async fn index(path: web::Path<String>, req_body: String, shared: web::Data<Mute
 
     col.insert_one(DbMonitorData{
     	timestamp:   Utc::now().to_string(),
-     	temperature: data.temperature,
+     	hive_temp:   data.hive_temp,
+      	extern_temp: data.extern_temp,
       	humidity:    data.humidity,
        	pressure:    data.pressure,
-        accoustics:  data.accoustics,
-        hive_mass:   data.hive_mass
+        acoustics:   data.acoustics,
     }).await.expect("Could not insert into db!");
 
     HttpResponse::Ok()
@@ -93,15 +93,15 @@ async fn main() -> std::io::Result<()> {
 	println!("*** Starting HTTP Server ***");
 
 	HttpServer::new(move || {
-        App::new()
-        	.service(index)
-            .app_data(app_data.clone())
-    })
-    .bind((std::env::var("HOST").expect(
+	    App::new()
+	       	.service(index)
+	        .app_data(app_data.clone())
+	})
+	.bind((std::env::var("HOST").expect(
 			"HOST environment variable does not exist!"
 		),
-    	8080
-    ))?
-    .run()
-    .await
+	   	8080
+	))?
+	.run()
+	.await
 }
