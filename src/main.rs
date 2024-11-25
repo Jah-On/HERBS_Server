@@ -10,6 +10,7 @@ struct AppData {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct MonitorData {
+	battery:     u8,  // Battery %
 	hive_temp:   i8,  // Celcius
 	extern_temp: i8,  // Celcius
 	humidity:    u8,  // % Relative Humidity
@@ -20,11 +21,12 @@ struct MonitorData {
 #[derive(Serialize, Deserialize, Debug)]
 struct DbMonitorData {
 	timestamp:   String, // UTC String
-	hive_temp:   i8,  // Celcius
-	extern_temp: i8,  // Celcius
-	humidity:    u8,  // % Relative Humidity
-	pressure:    u16, // Millibars
-	acoustics:   u16  // Loudness Value
+	battery:     u8,     // Battery %
+	hive_temp:   i8,     // Celcius
+	extern_temp: i8,     // Celcius
+	humidity:    u8,     // % Relative Humidity
+	pressure:    u16,    // Millibars
+	acoustics:   u16     // Loudness Value
 }
 
 //
@@ -50,6 +52,7 @@ async fn index(path: web::Path<String>, req_body: String, shared: web::Data<Mute
 
     col.insert_one(DbMonitorData{
     	timestamp:   Utc::now().to_string(),
+     	battery:     data.battery,
      	hive_temp:   data.hive_temp,
       	extern_temp: data.extern_temp,
       	humidity:    data.humidity,
