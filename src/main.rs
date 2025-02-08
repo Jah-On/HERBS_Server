@@ -1,6 +1,7 @@
 use actix_web::{get, post, put, web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
 use chrono::prelude::*;
+use std::time::Duration;
 use std::sync::Mutex;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -38,16 +39,21 @@ struct DbMonitorData {
 
 #[put("/{ping_post_access_key}/ping")]
 async fn ping_post(path: web::Path<String>, shared: web::Data<Mutex<AppData>>) -> impl Responder {
-	println!("Inside ping post!");
-
 	let mut locked = match shared.lock() {
 		Ok(res) => res,
-		Err(_) => return HttpResponse::InternalServerError()
+		Err(_) => {
+			println!("Poisoned mutex in ping put?");
+			return HttpResponse::InternalServerError()
+		}
 	};
 
-	if locked.keys.access_key != *path { return HttpResponse::Unauthorized() }
+	if locked.keys.access_key != *path {
+		std::mem::drop(locked);
+		return HttpResponse::Unauthorized();
+	}
 
 	locked.last_ping = Utc::now();
+	std::mem::drop(locked);
 
 	HttpResponse::Ok()
 }
@@ -56,16 +62,21 @@ async fn ping_post(path: web::Path<String>, shared: web::Data<Mutex<AppData>>) -
 async fn ping_get(path: web::Path<String>, shared: web::Data<Mutex<AppData>>) -> HttpResponse {
 	let locked = match shared.lock() {
 		Ok(res) => res,
-		Err(_) => return HttpResponse::InternalServerError().finish()
+		Err(_) => {
+			println!("Poisoned mutex in ping get?");
+			return HttpResponse::InternalServerError().finish()
+		}
 	};
 
 	if locked.keys.access_key != *path {
+		std::mem::drop(locked);
 		return HttpResponse::Unauthorized().finish();
 	}
 
-	HttpResponse::Ok().body(
-		locked.last_ping.to_string()
-	)
+	let time_as_string = locked.last_ping.to_string();
+	std::mem::drop(locked);
+
+	HttpResponse::Ok().body(time_as_string)
 }
 
 #[post("/{access_key}/{monitor_id}")]
@@ -74,19 +85,27 @@ async fn monitor(path: web::Path<(String, String)>, req_body: String, shared: we
 
 	let locked = match shared.lock() {
 		Ok(res) => res,
-		Err(_) => return HttpResponse::InternalServerError()
+		Err(_) => {
+			println!("Poisoned mutex in data post?");
+			return HttpResponse::InternalServerError()
+		}
 	};
 
 	if locked.keys.access_key != access_key {
+		std::mem::drop(locked);
 		return HttpResponse::Unauthorized();
 	}
 
 	match locked.keys.nodes.contains(&monitor_id) {
 		true => {},
-		_    => return HttpResponse::NotFound()
+		_    => {
+			std::mem::drop(locked);
+			return HttpResponse::NotFound()
+		}
 	}
 
 	let col: mongodb::Collection<DbMonitorData> = locked.db.collection(monitor_id.as_str());
+	std::mem::drop(locked);
 
 	let data: MonitorData;
 	match serde_json::from_str(&req_body) {
@@ -149,6 +168,8 @@ async fn main() -> std::io::Result<()> {
 			.service(ping_post)
 	        .app_data(app_data.clone())
 	})
+	.client_disconnect_timeout(Duration::from_millis(100))
+	.client_request_timeout(Duration::from_millis(500))
 	.bind((std::env::var("HOST").expect(
 			"HOST environment variable does not exist!"
 		),
