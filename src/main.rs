@@ -1,19 +1,17 @@
-use actix_web::{get, post, put, web, App, HttpResponse, HttpServer, Responder};
-use serde::{Deserialize, Serialize};
+use actix_web::http::StatusCode;
+use actix_web::{get, post, put, web, App, HttpResponse, HttpServer};
 use chrono::prelude::*;
-use std::time::Duration;
+use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Mutex;
 
-#[derive(Serialize, Deserialize, Debug)]
-struct Keys {
-	access_key: String,
-	nodes:      Vec<String>
-}
+mod apiary;
 
 struct AppData {
-	keys:      Keys,
 	db:        mongodb::Database,
-	last_ping: chrono::DateTime<Utc>
+	last_ping: HashMap<String, chrono::DateTime<Utc>>,
+	apiaries:  HashMap<String, apiary::Apiary>
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -37,70 +35,153 @@ struct DbMonitorData {
 	acoustics:   u16     // Loudness Value
 }
 
-#[put("/{ping_post_access_key}/ping")]
-async fn ping_post(path: web::Path<String>, shared: web::Data<Mutex<AppData>>) -> impl Responder {
-	let mut locked = match shared.lock() {
-		Ok(res) => res,
-		Err(_) => {
-			println!("Poisoned mutex in ping put?");
-			return HttpResponse::InternalServerError()
-		}
-	};
+/******************************** FIRMWARE API *******************************/
+#[get("/gateway/firmware/info/{apiary_id}/{gateway_id}")]
+async fn gateway_firmware_info(path: web::Path<(String, String)>, shared: web::Data<Mutex<AppData>>) -> HttpResponse {
+	let (apiary_id, gateway) = path.into_inner();
 
-	if locked.keys.access_key != *path {
-		std::mem::drop(locked);
-		return HttpResponse::Unauthorized();
-	}
-
-	locked.last_ping = Utc::now();
-	std::mem::drop(locked);
-
-	HttpResponse::Ok()
-}
-
-#[get("/{access_key}/ping")]
-async fn ping_get(path: web::Path<String>, shared: web::Data<Mutex<AppData>>) -> HttpResponse {
 	let locked = match shared.lock() {
 		Ok(res) => res,
-		Err(_) => {
-			println!("Poisoned mutex in ping get?");
-			return HttpResponse::InternalServerError().finish()
+		Err(_) =>  return HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+	};
+
+	let matching_apiary = match locked.apiaries.get(&apiary_id.clone()) {
+		Some(res) => res,
+		_ => {
+			std::mem::drop(locked);
+			return HttpResponse::new(StatusCode::UNAUTHORIZED);
+		},
+	};
+
+	match matching_apiary.has_gateway(gateway.clone()) {
+		false => {
+			std::mem::drop(locked);
+			return HttpResponse::new(StatusCode::UNAUTHORIZED);
+		},
+		true => {}
+	}
+
+	let file = format!("./fw/{}/{}.data", apiary_id, gateway);
+
+	match match std::fs::exists(&file) {
+		Ok(val) => val,
+		Err(_) => return HttpResponse::new(StatusCode::NOT_FOUND),
+	} {
+ 		false => return HttpResponse::new(StatusCode::NOT_FOUND),
+		true  => return HttpResponse::Ok().body(
+			std::fs::read_to_string(file).unwrap()
+		),
+	}
+}
+
+#[get("/gateway/firmware/bin/{apiary_id}/{gateway_id}")]
+async fn gateway_firmware_binary(path: web::Path<(String, String)>, shared: web::Data<Mutex<AppData>>) -> HttpResponse {
+	let (apiary_id, gateway) = path.into_inner();
+
+	let locked = match shared.lock() {
+		Ok(res) => res,
+		Err(_) =>  return HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+	};
+
+	let _matching_apiary = match locked.apiaries.get(&apiary_id.clone()) {
+		Some(res) => res,
+		_ => {
+			std::mem::drop(locked);
+			return HttpResponse::new(StatusCode::UNAUTHORIZED);
 		}
 	};
 
-	if locked.keys.access_key != *path {
-		std::mem::drop(locked);
-		return HttpResponse::Unauthorized().finish();
-	}
+	let file = format!("./fw/{}/{}.bin", apiary_id, gateway);
 
-	let time_as_string = locked.last_ping.to_string();
+	match match std::fs::exists(&file) {
+		Ok(val) => val,
+		Err(_) => return HttpResponse::new(StatusCode::NOT_FOUND),
+	} {
+ 		false => return HttpResponse::new(StatusCode::NOT_FOUND),
+		true  => return HttpResponse::Ok()
+    		.content_type("application/octet-stream")
+    		.body(
+      			std::fs::read(file).unwrap()
+      		),
+	}
+}
+
+/*****************************************************************************/
+
+#[put("/gateway/ping/{apiary_id}/{gateway_id}")]
+async fn ping_post(path: web::Path<(String, String)>, shared: web::Data<Mutex<AppData>>) -> HttpResponse {
+	let (apiary_id, gateway) = path.into_inner();
+
+	let mut locked = match shared.lock() {
+		Ok(res) => res,
+		Err(_) =>  return HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR),
+	};
+
+	match locked.apiaries.get(&apiary_id.clone()) {
+		Some(_) => {},
+		_ => {
+			std::mem::drop(locked);
+			return HttpResponse::new(StatusCode::UNAUTHORIZED);
+		}
+	};
+
+	// locked.last_ping = Utc::now();
+	*locked.last_ping.entry(gateway).or_insert(
+		Utc::now()
+	) = Utc::now();
+	std::mem::drop(locked);
+
+	HttpResponse::new(StatusCode::OK)
+}
+
+#[get("/gateway/ping/{apiary_id}/{gateway_id}")]
+async fn ping_get(path: web::Path<(String, String)>, shared: web::Data<Mutex<AppData>>) -> HttpResponse {
+	let (apiary_id, gateway) = path.into_inner();
+
+	let locked = match shared.lock() {
+		Ok(res) => res,
+		Err(_) => return HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+	};
+
+	match locked.apiaries.get(&apiary_id.clone()) {
+		Some(_) => {},
+		_ => {
+			std::mem::drop(locked);
+			return HttpResponse::new(StatusCode::UNAUTHORIZED);
+		}
+	};
+
+	let time_as_string = match locked.last_ping.get(&gateway) {
+		Some(ref_date_time) => ref_date_time.to_string(),
+		_                   => chrono::DateTime::UNIX_EPOCH.to_string()
+	};
 	std::mem::drop(locked);
 
 	HttpResponse::Ok().body(time_as_string)
 }
 
 #[post("/{access_key}/{monitor_id}")]
-async fn monitor(path: web::Path<(String, String)>, req_body: String, shared: web::Data<Mutex<AppData>>) -> impl Responder {
-	let (access_key, monitor_id) = path.into_inner();
+async fn monitor(path: web::Path<(String, String)>, req_body: String, shared: web::Data<Mutex<AppData>>) -> HttpResponse {
+	let (apiary_id, monitor_id) = path.into_inner();
 
 	let locked = match shared.lock() {
 		Ok(res) => res,
-		Err(_) => {
-			println!("Poisoned mutex in data post?");
-			return HttpResponse::InternalServerError()
+		Err(_) => return HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+	};
+
+	let found_apiary = match locked.apiaries.get(&apiary_id.clone()) {
+		Some(res) => res,
+		_ => {
+			std::mem::drop(locked);
+			return HttpResponse::new(StatusCode::UNAUTHORIZED);
 		}
 	};
 
-	if locked.keys.access_key != access_key {
-		std::mem::drop(locked);
-		return HttpResponse::Unauthorized();
-	}
-
-	match locked.keys.nodes.contains(&monitor_id) {
+	match found_apiary.has_bridge(monitor_id.clone()) {
 		true => {},
 		_    => {
 			std::mem::drop(locked);
-			return HttpResponse::NotFound()
+			return HttpResponse::new(StatusCode::NOT_FOUND)
 		}
 	}
 
@@ -110,7 +191,7 @@ async fn monitor(path: web::Path<(String, String)>, req_body: String, shared: we
 	let data: MonitorData;
 	match serde_json::from_str(&req_body) {
 		Ok(val) => data = val,
-		Err(_)  => return HttpResponse::BadRequest()
+		Err(_)  => return HttpResponse::new(StatusCode::BAD_REQUEST)
 	}
 
     col.insert_one(DbMonitorData{
@@ -123,18 +204,18 @@ async fn monitor(path: web::Path<(String, String)>, req_body: String, shared: we
         acoustics:   data.acoustics,
     }).await.expect("Could not insert into db!");
 
-    HttpResponse::Ok()
+    HttpResponse::new(StatusCode::OK)
 }
 
 #[get("/millis")]
-async fn milliseconds() -> impl Responder {
+async fn milliseconds() -> String {
     chrono::Utc::now().timestamp_millis().to_string()
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
 	let config = std::fs::read_to_string("data.conf").expect("Could not open config file!");
-	let keys: Keys = serde_json::from_str(config.as_str()).expect("Config file malformed!");
+	let apiaries: HashMap<String, apiary::Apiary> = serde_json::from_str(config.as_str()).expect("Config file malformed!");
 
 	let conn: mongodb::Client = mongodb::Client::with_uri_str(
 		std::env::var("MONGODB_URI").expect(
@@ -145,20 +226,28 @@ async fn main() -> std::io::Result<()> {
 	let db =       conn.database("beehivesensors");
 	let existing = db.list_collection_names().await.unwrap();
 
-	for node in &keys.nodes {
-		match existing.contains(&node) {
-			true => continue,
-			_    => db.create_collection(node).await.unwrap(),
+	for ap in apiaries.values() {
+		for bridge in ap.get_bridges() {
+			match existing.contains(&bridge) {
+				true => continue,
+				_    => db.create_collection(bridge).await.unwrap(),
+			}
 		}
 	}
 
 	let app_data = web::Data::new(Mutex::new(AppData{
 		db,
-		keys,
-		last_ping: chrono::DateTime::from_timestamp_millis(0).unwrap()
+		apiaries,
+		last_ping: HashMap::new()
 	}));
 
 	println!("*** Starting HTTP Server ***");
+
+	let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+    builder
+        .set_private_key_file("private.pem", SslFiletype::PEM)
+        .unwrap();
+    builder.set_certificate_chain_file("public.pem").unwrap();
 
 	HttpServer::new(move || {
 	    App::new()
@@ -166,15 +255,18 @@ async fn main() -> std::io::Result<()> {
 			.service(milliseconds)
 			.service(ping_get)
 			.service(ping_post)
+			.service(gateway_firmware_info)
+			.service(gateway_firmware_binary)
 	        .app_data(app_data.clone())
 	})
-	.client_disconnect_timeout(Duration::from_millis(100))
-	.client_request_timeout(Duration::from_millis(500))
-	.bind((std::env::var("HOST").expect(
-			"HOST environment variable does not exist!"
+	.workers(128)
+	.bind_openssl(
+		(
+			std::env::var("HOST").expect("HOST environment variable does not exist!"),
+		   	8080
 		),
-	   	8080
-	))?
+		builder
+	)?
 	.run()
 	.await
 }
